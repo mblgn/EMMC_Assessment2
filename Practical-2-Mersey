@@ -1,0 +1,1044 @@
+
+
+#### Ctrl + Shift + C is a useful shortcut for adding or removing comments from multiple lines of highlighted code.
+
+message("*** Setting libPath to lomgl hard drive ***")
+.libPaths("D:/Program Files/R/R-4.1.2/library") #change from oneDrive, fix RStudio’s package installation on Windows 10
+# getwd()
+
+
+
+# install.packages("whitebox")
+# 
+# # Installs whitebox from R-Forge
+#install.packages("whitebox", repos="http://R-Forge.R-project.org")
+# 
+# # Initialise whiteboxTool
+# whitebox::wbt_init()
+
+
+setwd("D:/Sem1/GEOG70581/Assessment2/GEOG70581")
+# Checks and installs packages
+
+
+packages <- c("ggplot2", "ggspatial", "here", "raster", "sf", "whitebox", # Practical-1
+              "data.table", "dplyr", "forcats", "MASS", "units") # Practical-2 
+
+install.packages(packages)
+
+
+library(udunits2)
+library(units)
+
+# Function to check and install packages
+check.packages <- function(pkg){
+  new.pkg <- pkg[!(pkg %in% installed.packages()[, "Package"])]
+  if (length(new.pkg)) 
+    install.packages(new.pkg, dependencies = TRUE)
+  sapply(pkg, require, character.only = TRUE)
+}
+
+
+check.packages(packages)
+
+
+library(whitebox)
+library(raster)
+library(sf)
+library(ggplot2)
+library(ggspatial)  #if failed, install "udunits2"
+
+#inspect whitebox
+wbt_exe_path(exe_path = NULL, shell_quote = TRUE)
+
+check_whitebox_binary()
+
+
+############################### Hydrology ###############################
+
+
+            ###############################
+            #                             #
+            #   Task 1  Flow routing      #
+            #                             #
+            ############################### 
+
+
+
+#############Creating a D8 pointer#############
+
+library(here) 
+#inspect
+here() #If the result returned by here() is incorrect, you need to uninstall and reinstall here
+
+# Sets file path for DEM
+dem_fill <- raster(here("data", "practical_2", "mersey_dem_fill.tif"))
+
+
+# Plots using ggplot
+g <- ggplot() +
+  layer_spatial(dem_fill, aes(fill = stat(band1))) +
+  theme_classic() + 
+  labs(fill = "Slope angle", x = "Easting", y = "Northing") +
+  scale_fill_continuous(type = "viridis",  na.value = NA)
+g
+
+
+wbt_d8_pointer(
+  here("data", "practical_2", "mersey_dem_fill.tif"),
+  here("output", "practical_2", "mersey_dem_D8_pointer.tif"),
+  esri_pntr = FALSE, 
+  wd = NULL, 
+  verbose_mode = FALSE
+)
+
+d8_pointer <- raster(here("output", "practical_2", "mersey_dem_D8_pointer.tif"))
+
+# Plots using ggplot
+g2 <- ggplot() +
+  layer_spatial(d8_pointer, aes(fill = stat(band1))) +
+  theme_classic() + 
+  labs(fill = "Pointer value", x = "Easting", y = "Northing") +
+  scale_fill_continuous(type = "viridis",  na.value = NA)
+g2
+
+
+##################Catchment area####################
+
+
+wbt_d8_flow_accumulation(
+  here("output", "practical_2", "mersey_dem_D8_pointer.tif"), 
+  here("output", "practical_2", "dem_10m_flow_accumulation.tif"),
+  out_type = "specific contributing area", 
+  log = "TRUE",
+  pntr = TRUE   #Important: Since we are using a pointer grid and not a DEM, we need to specify this parameter ( pntr = TRUE). If we do not set this parameter, WBT will assume that the DEM values are actually elevations (in the range 1 - 128 m) and we will get false results!
+)
+
+d8_flow <- raster(here("output", "practical_2", "dem_10m_flow_accumulation.tif"))
+
+g3 <- ggplot() +
+  layer_spatial(d8_flow, aes(fill = stat(band1))) +
+  theme_classic() + 
+  labs(fill = "Log-transformed flow accumulation value", x = "Easting", y = "Northing") +
+  scale_fill_continuous(type = "viridis",  na.value = NA)+
+  theme(legend.position = "top")
+g3
+
+
+
+
+                    ###############################
+                    #                             #
+                    #     Task 2  Seed points     #
+                    #                             #
+                    ############################### 
+
+
+# Loads flow accumulation raster using the raster and here packages
+mersey_accumulation <- raster(here("output", "practical_2", "dem_10m_flow_accumulation.tif"))
+
+# Loads EA monitoring sites using the st_read function
+seed_points <- st_read(here("data", "practical_2", "mersey_EA_sites.shp"))
+
+# Crops the accumulation raster based on a defined extent (row and col indexes) 
+mersey_accumulation_crop <- crop(mersey_accumulation, extent(mersey_accumulation,  632, 645, 540, 578))
+
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(mersey_accumulation_crop, aes(fill = stat(band1))) + # Adds raster layer
+  annotation_spatial(data = seed_points, shape = 21, fill = "#FFFFFF", colour = "black", size = 3) + # Adds vector layer
+  theme_classic() + 
+  labs(fill = "Log-transformed flow accumulation value", x = "Easting", y = "Northing") +
+  scale_fill_continuous(type = "viridis",  na.value = NA) +
+  theme(legend.position = "top")
+p 
+
+
+#Jenson Snap Pour Points -- To ensure accurate watershed creation, sites located outside the river network need to be correctly relocated.
+
+#1. Calculating the number of upslope elements (NUE)
+
+wbt_d8_flow_accumulation(
+  here("data", "practical_2", "mersey_dem_fill.tif"), 
+  here("output", "practical_2", "mersey_dem_D8_flow_accumulation_NUE.tif"),
+  out_type = "cells", 
+  log = FALSE,
+  pntr = FALSE   #Important: Since we are using a pointer grid and not a DEM, we need to specify this parameter ( pntr = TRUE). If we do not set this parameter, WBT will assume that the DEM values are actually elevations (in the range 1 - 128 m) and we will get false results!
+)
+
+
+#2.Defining the river network
+
+wbt_extract_streams(
+  here("output", "practical_2", "mersey_dem_D8_flow_accumulation_NUE.tif"),
+  here("output", "practical_2", "mersey_dem_streams_act200.tif"),
+  threshold = 200,
+  zero_background = TRUE
+)
+
+
+#3. Snapping
+
+wbt_jenson_snap_pour_points(
+  here("data", "practical_2", "mersey_EA_sites.shp"),
+  here("output", "practical_2", "mersey_dem_streams_act200.tif"),
+  here("output", "practical_2", "mersey_EA_sites_snapped.shp"),
+  snap_dist = 500
+)
+
+
+###inspect
+# Loads streams raster using the raster and here packages
+mersey_streams <- raster(here("output", "practical_2", "mersey_dem_streams_act200.tif"))
+
+# Crops the streams raster based on a defined extent (row and col indexes) 
+mersey_streams_crop <- crop(mersey_streams, extent(mersey_streams,  632, 645, 540, 578))
+
+# Loads original and snapped EA monitoring sites using the st_read function
+seed_points <- st_read(here("data", "practical_2", "mersey_EA_sites.shp"))
+snapped_seed_points <- st_read(here("output", "practical_2", "mersey_EA_sites_snapped.shp"))
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(mersey_streams_crop, aes(fill = stat(band1))) + # Adds raster layer
+  annotation_spatial(data = seed_points, shape = 21, fill = "#FFFFFF", colour = "black", size = 3) + # Adds seeds layer
+  annotation_spatial(data = snapped_seed_points, shape = 21, fill = "#FB5858", colour = "black", size = 3) + # Adds snapped seeds layer
+  theme_classic() + 
+  labs(fill = "Stream network ID", x = "Easting", y = "Northing") +
+  scale_fill_continuous(type = "viridis",  na.value = NA) +
+  theme(legend.position = "top")
+p 
+
+
+
+
+
+                  ###############################
+                  #                             #
+                  # Task 3  Watershed creation  #
+                  #                             #
+                  ############################### 
+
+
+
+
+wbt_watershed(
+  here("output", "practical_2", "mersey_dem_D8_pointer.tif"),
+  here("output", "practical_2", "mersey_EA_sites_snapped.shp"),
+  here("output", "practical_2", "mersey_watersheds.tif"),
+  esri_pntr = FALSE,
+  wd = NULL,
+  verbose_mode = FALSE
+)
+
+# Loads streams raster using the raster and here packages
+mersey_watersheds <- raster(here("output", "practical_2", "mersey_watersheds.tif"))
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(mersey_watersheds, aes(fill = factor(stat(band1)))) + # Adds raster layer
+  annotation_spatial(data = snapped_seed_points, shape = 21, fill = "#FB5858", colour = "black", size = 3) + # Adds snapped seeds layer
+  theme_classic() + 
+  labs(fill = "Stream network", x = "Easting", y = "Northing") +
+ # scale_fill_discrete (type = getOption("ggplot2.discrete.fill"), na.value = NA) +
+  scale_fill_identity(guide = "legend",na.value = NA) +
+  theme(legend.position = "top")
+p 
+
+
+# Converts watershed to vector format (polygon)
+wbt_raster_to_vector_polygons(here("output", "practical_2", "mersey_watersheds.tif"),
+                              here("output", "practical_2", "mersey_watersheds.shp"))
+
+
+############################### Surface derivatives ###############################
+
+
+
+
+                      
+                      ###############################
+                      #                             #
+                      #  Task 4  Reclassification   #
+                      #                             #
+                      ############################### 
+
+#Land cover# Loads land cover raster
+land_cover <- raster(here("data", "practical_2", "mersey_LC.tif"))
+
+# Converts the land cover raster to a factor, overwriting the original variable
+land_cover <- as.factor(land_cover)
+
+# inspect
+land_cover
+
+unique(land_cover)
+
+# Categories of interest
+categories <- as.data.frame(c(41, 42, 43, 91, 101, 102, 51, 52, 61, 71, 81, 171, 172, 111, 121))
+colnames(categories) <- "ID"
+
+head(categories)
+
+# Collapse categories into groups based on ID
+categories$name <- fct_collapse(as.factor(categories$ID),
+                                "Arable" = c("41", "42", "43"),
+                                "Heath" = c("91", "101", "102"),
+                                "Grassland" = c("51", "52", "61", "71", "81"),
+                                "Urban" = c("171", "172"), 
+                                "Wetland" = c("111", "121"))
+
+# Prints categories data frame
+categories
+
+land_cover_classified <- subs(land_cover, categories)
+
+
+# Write to new raster
+writeRaster(land_cover_classified,
+            here("output", "practical_2", "mersey_LC_reclass.tif")
+            )
+
+# Loads land cover raster using the raster and here packages
+mersey_land_cover <- raster(here("output", "practical_2", "mersey_LC_reclass.tif"))
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(mersey_land_cover, aes(fill = stat(band1))) + # Adds raster layer
+  theme_classic() + 
+  labs(fill = "Land cover class", x = "Easting", y = "Northing") +
+  scale_fill_distiller(palette = "RdYlBu", na.value = NA) + # Updated fill aesthetic
+  theme(legend.position = "top")
+p 
+
+
+
+
+
+#### Hydrology of Soil Types (HOST)
+
+
+#Land cover# Loads land cover raster
+host <- raster(here("data", "practical_2", "mersey_HOST.tif"))
+
+# Converts the land cover raster to a factor, overwriting the original variable
+host <- as.factor(host)
+
+# inspect
+host
+unique(host)
+
+# Categories of interest
+categories <- as.data.frame(c(1, 3, 4, 5, 6, 7, 15, 16, 12, 17, 18, 19, 21, 22, 8, 9, 13, 24,10, 11, 14, 25, 26, 27, 29))
+colnames(categories) <- "ID"
+
+head(categories)
+
+# Collapse categories into groups based on ID
+categories$name <- fct_collapse(as.factor(categories$ID),
+                                "Permeable " = c("1", "3", "4","5", "6", "7","15", "16"),
+                                "Impermeable " = c("12", "17", "18","19", "21", "22"),
+                                "Gleyed " = c("8", "9", "13", "24"),
+                                "Peats " = c("10", "11","14", "25", "26","27", "29"))
+
+# Prints categories data frame
+categories
+
+host_classified <- subs(host, categories)
+
+
+# Write to new raster
+writeRaster(host_classified,
+            here("output", "practical_2", "mersey_HOST_reclass.tif")
+)
+
+# Loads land cover raster using the raster and here packages
+soils <- raster(here("output", "practical_2", "mersey_HOST_reclass.tif"))
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(soils, aes(fill = stat(band1))) + # Adds raster layer
+  theme_classic() + 
+  labs(fill = "Hydrology of Soil Types", x = "Easting", y = "Northing") +
+  scale_fill_distiller(palette = "RdYlBu", na.value = NA) + # Updated fill aesthetic
+  theme(legend.position = "top")
+p 
+
+
+
+#### Bedrock geology
+#Land cover# Loads land cover raster
+Bedrock <- raster(here("data", "practical_2", "mersey_bedrock.tif"))
+
+# Converts the land cover raster to a factor, overwriting the original variable
+Bedrock <- as.factor(Bedrock)
+
+# inspect
+Bedrock
+
+# Categories of interest
+categories <- as.data.frame(c(5, 16, 18, 24, 28, 34,10, 11, 17, 19, 9, 15, 22))
+colnames(categories) <- "ID"
+
+head(categories)
+
+# Collapse categories into groups based on ID
+categories$name <- fct_collapse(as.factor(categories$ID),
+                                "Sands_and_Muds  " = c("5", "16", "18","24", "28","34"),
+                                "Limestone  " = c("10", "11", "17","19"),
+                                "Coal " = c( "9", "15", "22"))
+
+# Prints categories data frame
+categories
+
+bedrock_classified <- subs(Bedrock , categories)
+
+
+# Write to new raster
+writeRaster(bedrock_classified,
+            here("output", "practical_2", "mersey_bedrock_reclass.tif")
+)
+
+# Loads land cover raster using the raster and here packages
+bedrock <- raster(here("output", "practical_2", "mersey_bedrock_reclass.tif"))
+
+# Plots using ggplot
+p <- ggplot() +
+  layer_spatial(bedrock, aes(fill = stat(band1))) + # Adds raster layer
+  theme_classic() + 
+  labs(fill = "Bedrock geology class", x = "Easting", y = "Northing") +
+  scale_fill_distiller(palette = "RdYlBu", na.value = NA) + # Updated fill aesthetic
+  theme(legend.position = "top")
+p 
+
+
+                
+                #############################################
+                #                                           #
+                #  Task 5 Calculating surface derivatives   #
+                #                                           #
+                ############################################# 
+
+#Calculating slope 
+
+wbt_slope(
+  here("data", "practical_2", "mersey_dem_fill.tif"),
+  here("output", "practical_2", "mersey_dem_slope.tif"),
+  zfactor = NULL,
+  units = "degrees",
+  wd = NULL,
+  verbose_mode = FALSE
+)
+
+
+mersey_slope <- raster(here("output", "practical_2", "mersey_dem_slope.tif"))
+
+g_slope <- ggplot() +
+  layer_spatial(mersey_slope, aes(fill = stat(band1))) + # Adds raster layer
+  theme_classic() + 
+  labs(fill = "Slope angle", x = "Easting", y = "Northing") +
+  scale_fill_distiller(palette = "RdYlBu", na.value = NA) + # Updated fill aesthetic
+  theme(legend.position = "top")
+g_slope 
+
+#Calculating aspect 
+
+wbt_aspect(
+  here("data", "practical_2", "mersey_dem_fill.tif"), 
+  here("output", "practical_2", "mersey_dem_aspect.tif"), 
+  zfactor = NULL, 
+  wd = NULL, 
+  verbose_mode = FALSE
+)
+
+mersey_aspect <- raster(here("output", "practical_2", "mersey_dem_aspect.tif"))
+
+g_aspect <- ggplot() +
+  layer_spatial(mersey_aspect, aes(fill = stat(band1))) + # Adds raster layer
+  theme_classic() + 
+  labs(fill = "Aspect", x = "Easting", y = "Northing") +
+  scale_fill_distiller(palette = "RdYlBu", na.value = NA) + # Updated fill aesthetic
+  theme(legend.position = "top")
+g_aspect
+
+
+
+
+
+
+          #############################################
+          #                                           #
+          #  Task 6  Extracting surface derivatives   #
+          #                                           #
+          ############################################# 
+
+
+
+
+##1.Water quality measurements
+
+watersheds <- st_read(here("output", "practical_2", "mersey_watersheds.shp"))
+
+colnames(watersheds)
+
+# Replaces column name 'VALUE' with 'SEED_Point_ID'
+names(watersheds)[names(watersheds) == 'VALUE'] <- 'Seed_Point_ID'
+
+# Loads csv using read.csv
+ea_data <- read.csv(here("data", "practical_2", "mersey_EA_chemistry.csv"))
+
+# Merge based upon matching Seed_Point_IDs
+watersheds_ea <- merge(watersheds, ea_data, by = "Seed_Point_ID")
+
+#inspect
+head(watersheds_ea)
+
+##2.Spatial areas
+
+# Calculates area geometry using st_area()
+#watersheds_ea$area <- st_area(watersheds_ea)
+
+# Calculates area geometry using st_area(), converting to km^2 using the units package
+watersheds_ea$area <- set_units(st_area(watersheds_ea), km^2)
+
+# Load elevation raster
+mersey_dem <- raster(here("data", "practical_2", "mersey_dem_fill.tif"))
+
+# Calculates the number of raster cells per watershed 
+watersheds_ea$count <- extract(mersey_dem, watersheds_ea, fun=function(x, ...) length(x)) 
+
+#inspect
+colnames(watersheds_ea)
+
+##3.Continuous derivatives
+
+# Removes object(s) from memory
+#rm(mersey_dem)
+
+mersey_rainfall<-raster(here("data", "practical_2", "mersey_rainfall.tif"))
+# Extracts raster values for each watershed, calculates mean (fun=mean), and stores in attribute table ($average_elevation)
+watersheds_ea$average_elevation <- extract(mersey_dem, watersheds_ea, fun=mean, na.rm=TRUE)
+watersheds_ea$average_rainfall <- extract(mersey_rainfall, watersheds_ea, fun=mean, na.rm=TRUE)
+watersheds_ea$average_slope <- extract(mersey_slope, watersheds_ea, fun=mean, na.rm=TRUE)
+watersheds_ea$average_aspect <- extract(mersey_aspect, watersheds_ea, fun=mean, na.rm=TRUE)
+
+
+head(watersheds_ea)
+
+##4. Calculating categorical derivatives
+
+# Extract land cover counts (5 classes so levels = 1:5)
+land_cover_classes <- extract(mersey_land_cover, watersheds_ea, fun=function(i,...) table(factor(i, levels = 1:5)))
+soils_classes <- extract(soils, watersheds_ea, fun=function(i,...) table(factor(i, levels = 1:4)))
+bedrock_classes <- extract(bedrock, watersheds_ea, fun=function(i,...) table(factor(i, levels = 1:3)))
+
+head(land_cover_classes)
+head(soils_classes)
+head(bedrock_classes)
+
+
+colnames(land_cover_classes) <- c("Arable", "Heath", "Grassland", "Urban", "Wetland")
+colnames(soils_classes) <- c("Permeable", "Impermeable", "Gleyed", "Peats")
+colnames(bedrock_classes) <- c("Sands_and_Muds", "Limestone", "Coal")
+
+
+head(land_cover_classes)
+head(soils_classes)
+head(bedrock_classes)
+
+
+# Combines watersheds data frame with categorical counts
+watersheds_ea <- cbind(watersheds_ea, land_cover_classes, soils_classes, bedrock_classes)
+
+#inspect
+head(watersheds_ea)
+
+##5.Normalising categorical derivatives
+
+# Creates vector of categorical variables
+categorical_names <- c("Arable", "Heath", "Grassland", "Urban", "Wetland", "Permeable", "Impermeable", "Gleyed", "Peats", "Sands_and_Muds", "Limestone", "Coal")
+
+# Prints vector
+categorical_names
+
+# Loops through each element of categorical_names and stores it in variable "i"
+for (i in categorical_names){
+  # Creates a new column name using the variable "i" and the string "percent", separated by an underscore.
+  col <- paste(i, "percent", sep="_")
+  # Updates watersheds_ea with the percentage cover of each category
+  watersheds_ea[col] <- as.numeric(watersheds_ea[[i]]/watersheds_ea$count*100)
+  
+}
+
+
+# Drops geometry attribute from watersheds_ea
+watersheds_ea <- st_drop_geometry(watersheds_ea)
+
+# Writes data frame to comma-separated file
+write.csv(x = watersheds_ea, here("output", "practical_2", "mersey_watersheds_ea.csv"), row.names=FALSE)
+
+head(watersheds_ea)
+
+
+
+
+
+          #############################
+          #                           #
+          #  Task 7  Model building   #
+          #                           #
+          ############################# 
+
+
+
+
+# Reads completed file from csv
+watersheds_df <- read.csv(here("output", "practical_2", "mersey_watersheds_ea.csv"))
+
+
+##1.An introduction to linear models in R
+
+# Fits a linear model
+model <- lm(formula = NO2 ~ average_elevation, data = watersheds_df)
+
+colnames(watersheds_df)
+
+# Fits a linear model
+model <- lm(formula = NO2 ~ average_elevation + average_rainfall, data = watersheds_df)
+summary(model)
+
+#format(c(-2.096e-04, -8.358e-06) , scientific = FALSE)
+
+##2.Stepwise regression
+
+# Creates a vector of column names, including only those which contain "average" or "percent"
+factors <- colnames(watersheds_df %>% dplyr::select(contains(c("average", "percent"))))
+
+# Prints to console
+factors
+
+variables <- watersheds_df[factors]
+
+#inspect
+head(variables)
+
+head(watersheds_df)
+# Column bind the NO2 column from watersheds_df with the data frame containing all the independent variables 
+model_df_no2 <- cbind(NO2 = watersheds_df$NO2, variables)
+
+
+model_df_ph <- cbind(Ph = watersheds_df$Ph, variables)
+model_df_ssc <- cbind(SSC = watersheds_df$SSC, variables)
+model_df_ca <- cbind(Ca = watersheds_df$Ca, variables)
+model_df_mg <- cbind(Mg = watersheds_df$Mg, variables)
+model_df_nh4 <- cbind(NH4 = watersheds_df$NH4, variables)
+model_df_ton <- cbind(NO3 = watersheds_df$NO3, variables)
+model_df_ton <- cbind(TON = watersheds_df$TON, variables)
+model_df_po4 <- cbind(PO4 = watersheds_df$PO4, variables)
+model_df_zn <- cbind(Zn = watersheds_df$Zn, variables)
+
+# Fits a linear model
+no2_model <- lm(formula = NO2 ~ ., data = model_df_no2)
+
+ph_model <- lm(formula = Ph ~ ., data = model_df_ph)
+ssc_model <- lm(formula = SSC ~ ., data = model_df_ssc)
+ca_model <- lm(formula = Ca ~ ., data = model_df_ca)
+mg_model <- lm(formula = Mg ~ ., data = model_df_mg)
+nh4_model <- lm(formula = NH4 ~ ., data = model_df_nh4)
+no3_model <- lm(formula = NO3 ~ ., data = model_df_no3)
+ton_model <- lm(formula = TON ~ ., data = model_df_ton)
+po4_model <- lm(formula = PO4 ~ ., data = model_df_po4)
+zn_model <- lm(formula = Zn ~ ., data = model_df_zn)
+
+
+summary(no2_model)
+
+summary(ph_model)
+summary(ssc_model)
+summary(ca_model)
+summary(mg_model)
+summary(nh4_model)
+summary(no3_model)
+summary(ton_model)
+summary(po4_model)
+summary(no2_model)
+
+install.packages("asbio")
+library(asbio)
+install.packages("rsq")
+library(rsq)
+# Stepwise regression model
+
+#no2
+step.no2_model <- stepAIC(no2_model, # Input linear model
+                      direction = "both",
+                      trace = FALSE, # Print out intermediate results? 
+                      k = 4) 
+
+
+summary(step.no2_model)
+
+lm.with<-lm(formula = NO2 ~ Urban_percent , data = model_df_no2)
+summary(lm.with)
+lm.without<-update(step.no2_model, ~. - average_slope)
+summary(lm.without)
+partial.R2(lm.without,step.no2_model)
+
+rsq.partial(step.no2_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#PH
+step.ph_model <- stepAIC(ph_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 3) 
+
+
+summary(step.ph_model)
+
+lm.with<-lm(formula = Ph ~ Wetland_percent, data = model_df_ph)
+summary(lm.with)
+lm.without<-update(step.ph_model, ~. - Grassland_percent - Limestone_percent)
+summary(lm.without)
+partial.R2(lm.without,step.ph_model)
+
+rsq.partial(step.ph_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#SSC
+step.ssc_model <- stepAIC(ssc_model, # Input linear model
+                         direction = "both",
+                         trace = FALSE, # Print out intermediate results? 
+                         k = 3) 
+
+
+summary(step.ssc_model)
+
+lm.with<-lm(formula = SSC ~ Arable_percent, data = model_df_ssc)
+summary(lm.with)
+lm.without<-update(step.ph_model, ~. - Grassland_percent - Limestone_percent)
+summary(lm.without)
+partial.R2(lm.without,step.ph_model)
+
+rsq.partial(step.ssc_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#Ca
+step.ca_model <- stepAIC(ca_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 3) 
+
+
+summary(step.ca_model)
+
+lm.with<-lm(formula = Ca ~ Gleyed_percent+Arable_percent, 
+            data = model_df_ca)
+summary(lm.with)
+rsq.partial(step.ca_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#Mg
+step.mg_model <- stepAIC(mg_model, # Input linear model
+                         direction = "both",
+                         trace = FALSE, # Print out intermediate results? 
+                         k = 2) 
+
+
+summary(step.mg_model)
+
+lm.with<-lm(formula = Mg ~ Arable_percent+Peats_percent , 
+            data = model_df_mg)
+
+summary(lm.with)
+rsq.partial(step.mg_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#NH4
+step.nh4_model <- stepAIC(nh4_model, # Input linear model
+                         direction = "both",
+                         trace = FALSE, # Print out intermediate results? 
+                         k = 3) 
+
+
+summary(step.nh4_model)
+rsq.partial(step.nh4_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#NO3
+step.no3_model <- stepAIC(no3_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 3) 
+
+
+summary(step.no3_model)
+
+lm.with<-lm(formula = NO3 ~ average_slope, data = model_df_no3)
+summary(lm.with)
+rsq.partial(step.no3_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#TON
+step.ton_model <- stepAIC(ton_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 3) 
+
+
+summary(step.ton_model)
+
+lm.with<-lm(formula = TON ~ average_slope, data = model_df_ton)
+summary(lm.with)
+rsq.partial(step.ton_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#PO4
+step.po4_model <- stepAIC(po4_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 4) 
+
+
+summary(step.po4_model)
+
+lm.with<-lm(formula = PO4 ~ Grassland_percent , data = model_df_po4)
+summary(lm.with)
+rsq.partial(step.po4_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+
+#Zn
+step.zn_model <- stepAIC(zn_model, # Input linear model
+                          direction = "both",
+                          trace = FALSE, # Print out intermediate results? 
+                          k = 3) 
+
+
+summary(step.zn_model)
+lm.with<-lm(formula = Zn ~  average_rainfall + Urban_percent, 
+            data = model_df_zn)
+summary(lm.with)
+rsq.partial(step.zn_model,objR=NULL,adj=FALSE,type=c('v','kl','sse','lr','n'))
+            
+            #############################
+            #                           #
+            #  Task 8  Error analysis   #
+            #                           #
+            ############################# 
+#install.packages("ggpmisc")
+
+
+# Predicts based on upon stepwise model, saving to watersheds dataframe
+watersheds_df$predicted_no2 <- predict(step.no2_model)
+
+watersheds_df$predicted_ph <- predict(step.ph_model)
+watersheds_df$predicted_ssc <- predict(step.ssc_model)
+watersheds_df$predicted_ca <- predict(step.ca_model)
+watersheds_df$predicted_mg <- predict(step.mg_model)
+watersheds_df$predicted_nh4 <- predict(step.nh4_model)
+watersheds_df$predicted_no3 <- predict(step.no3_model)
+watersheds_df$predicted_ton <- predict(step.ton_model)
+watersheds_df$predicted_po4 <- predict(step.po4_model)
+watersheds_df$predicted_zn <- predict(step.zn_model)
+
+head(watersheds_df)
+
+install.packages("ggpubr")
+
+# ggplot of measured vs. modelled (predicted) NO2 values
+no2_plot <- ggplot(data = watersheds_df, aes(x = predicted_no2, y = NO2)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y = 0.19,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 0.22,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = 'Modelled '~NO[2]~"  ("~mg~"-"~N~""~l^"-1"~")", y = 'Measured '~NO[2]~"  ("~mg~"-"~N~""~l^"-1"~")")
+
+
+no2_plot
+
+
+ph_plot <- ggplot(data = watersheds_df, aes(x = predicted_ph, y = Ph)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y = 8.0,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 8.22,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18   , lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = 'Modelled Ph', y = 'Measured Ph')
+
+
+ph_plot
+
+ssc_plot <- ggplot(data = watersheds_df, aes(x = predicted_ssc, y = SSC)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =52,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 60,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = 'Modelled '~SSC~"("~mg~""~l^"-1"~")", y = 'Measured  '~SSC~"("~mg~""~l^"-1"~")")
+
+
+ssc_plot
+
+ca_plot <- ggplot(data = watersheds_df, aes(x = predicted_ca, y = Ca)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =135,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 150,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled "~Ca^"2+"~"("~mg~""~l^"-1"~")", y = "Measured "~Ca^"2+"~"("~mg~""~l^"-1"~")")
+
+
+ca_plot
+
+mg_plot <- ggplot(data = watersheds_df, aes(x = predicted_mg, y = Mg)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =72,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 80,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled "~Mg^"2+"~"("~mg~""~l^"-1"~")", y = "Measured "~Mg^"2+"~"("~mg~""~l^"-1"~")")
+
+
+mg_plot
+
+nh4_plot <- ggplot(data = watersheds_df, aes(x = predicted_nh4, y = NH4)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =4.3,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 5,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = 'Modelled '~NH[4]^"+"~"  ("~mg~"-"~N~""~l^"-1"~")", y = 'Measured '~NH[4]^"+"~"  ("~mg~"-"~N~""~l^"-1"~")")
+
+
+nh4_plot
+
+no3_plot <- ggplot(data = watersheds_df, aes(x = predicted_no3, y = NO3)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =6.7,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 8,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled "~NO[3]^"-"~"  ("~mg~"-"~N~""~l^"-1"~")", y = "Measured "~NO[3]^"-"~"  ("~mg~"-"~N~""~l^"-1"~")")
+
+
+no3_plot
+
+ton_plot <- ggplot(data = watersheds_df, aes(x = predicted_ton, y = TON)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =6.7,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 8,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled TON"~"  ("~mg~"-"~N~""~l^"-1"~")", y = "Measured TON"~"  ("~mg~"-"~N~""~l^"-1"~")")
+
+
+ton_plot
+
+po4_plot <- ggplot(data = watersheds_df, aes(x = predicted_po4, y = PO4)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =1.15,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 1.4,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled "~PO[4]^"3-"~"  ("~mg~"-"~P~""~l^"-1"~")", y = "Measured "~PO[4]^"3-"~"  ("~mg~"-"~P~""~l^"-1"~")")
+
+
+po4_plot
+
+
+zn_plot <- ggplot(data = watersheds_df, aes(x = predicted_zn, y = Zn)) +
+  # Adds the point data, modifying the shape, size, colour and fill
+  geom_point(shape = 21, colour = "black", fill = "#5695FF", size = 4,alpha=0.618) +
+  geom_line(aes(y=step.zn_model$fitted.values))+
+  # Adding a linear regression ("lm"), removing standard error bars (se = FALSE)
+  geom_smooth(position = "identity",method = "lm",se=T , colour = "#FF7A71",size = 2) +
+  stat_cor( aes(label = paste( ..rr.label..)),label.y =55,digits = 2,size = 8)+ #this means at 35th unit in the y axis, the r squared and p value will be shown
+  stat_regline_equation(label.y = 63,size = 8)+ #this means at 30th unit regresion line equation will be shown
+  # Adding a 1:1 line for comparison
+  geom_abline(intercept=0,lty = "dashed", slope = 1,colour="black",size = 1.5,alpha=0.7) +
+  # Setting the theme and aspect ratio
+  theme_classic() +
+  theme(aspect.ratio = 1,axis.title.x = element_text(size = 18, lineheight = .9),axis.title.y = element_text(size = 18, lineheight = .9)) +
+  # Add axis labels and a title
+  labs(x = "Modelled "~Zn^"2+"~"  ("~μg~""~l^"-1"~")", y = "Measured "~Zn^"2+"~"  ("~μg~""~l^"-1"~")")
+
+
+zn_plot
+
+
+
+
+
+
+
+
+######	Root mean square error
+
+
+sqrt(mean((watersheds_df$Zn - watersheds_df$predicted_zn)^2))
+
+#install.packages("Metrics")
+library(Metrics)
+
+#RMSE
+rmse(watersheds_df$NO2, watersheds_df$predicted_no2)
+
+rmse(watersheds_df$Ph, watersheds_df$predicted_ph)
+
+rmse(watersheds_df$SSC, watersheds_df$predicted_ssc)
